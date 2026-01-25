@@ -18,11 +18,15 @@ public class PackageService {
 
     private final PackageRepository packageRepository;
     private final com.courier.org.repository.TrackingEventRepository trackingEventRepository;
+    private final EmailService emailService;
+    private final java.security.SecureRandom random = new java.security.SecureRandom();
 
     public PackageService(PackageRepository packageRepository,
-            com.courier.org.repository.TrackingEventRepository trackingEventRepository) {
+            com.courier.org.repository.TrackingEventRepository trackingEventRepository,
+            EmailService emailService) {
         this.packageRepository = packageRepository;
         this.trackingEventRepository = trackingEventRepository;
+        this.emailService = emailService;
     }
 
     public PackageResponse createPackage(CreatePackageRequest request, String userId) {
@@ -36,10 +40,24 @@ public class PackageService {
         pkg.setDescription(request.getDescription());
         pkg.setAmount(calculatePrice(request.getWeight(), request.getPackageType()));
         pkg.setStatus(PackageStatus.CREATED);
+        pkg.setDeliveryOtp(generateOtp());
 
         CourierPackage saved = packageRepository.save(pkg);
         createTrackingEvent(saved, "Package created");
+
+        // Send OTP email to sender's registered email (assuming it's in sender details)
+        try {
+            emailService.sendOtpEmail(saved.getSender().getEmail(), saved.getTrackingNumber(), saved.getDeliveryOtp());
+        } catch (Exception e) {
+            // Log error but don't fail the request for college project
+            System.err.println("Failed to send OTP email: " + e.getMessage());
+        }
+
         return PackageResponse.fromEntity(saved);
+    }
+
+    private String generateOtp() {
+        return String.format("%06d", random.nextInt(1000000));
     }
 
     public PackageResponse getPackageById(String id) {
