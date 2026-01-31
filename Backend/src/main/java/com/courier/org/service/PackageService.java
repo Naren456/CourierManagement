@@ -1,9 +1,12 @@
 package com.courier.org.service;
 
 import com.courier.org.dto.*;
+import com.courier.org.dto.events.NotificationEvent;
+import com.courier.org.dto.events.PackageEvent;
 import com.courier.org.exception.ResourceNotFoundException;
 import com.courier.org.model.*;
 import com.courier.org.repository.PackageRepository;
+import com.courier.org.repository.TrackingEventRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -17,16 +20,16 @@ import java.util.stream.Collectors;
 public class PackageService {
 
     private final PackageRepository packageRepository;
-    private final com.courier.org.repository.TrackingEventRepository trackingEventRepository;
-    private final EmailService emailService;
+    private final TrackingEventRepository trackingEventRepository;
+    private final KafkaProducerService kafkaProducerService;
     private final java.security.SecureRandom random = new java.security.SecureRandom();
 
     public PackageService(PackageRepository packageRepository,
-            com.courier.org.repository.TrackingEventRepository trackingEventRepository,
-            EmailService emailService) {
+            TrackingEventRepository trackingEventRepository,
+            KafkaProducerService kafkaProducerService) {
         this.packageRepository = packageRepository;
         this.trackingEventRepository = trackingEventRepository;
-        this.emailService = emailService;
+        this.kafkaProducerService = kafkaProducerService;
     }
 
     public PackageResponse createPackage(CreatePackageRequest request, String userId) {
@@ -45,13 +48,22 @@ public class PackageService {
         CourierPackage saved = packageRepository.save(pkg);
         createTrackingEvent(saved, "Package created");
 
-        // Send OTP email to sender's registered email (assuming it's in sender details)
-        try {
-            emailService.sendOtpEmail(saved.getSender().getEmail(), saved.getTrackingNumber(), saved.getDeliveryOtp());
-        } catch (Exception e) {
-            // Log error but don't fail the request for college project
-            System.err.println("Failed to send OTP email: " + e.getMessage());
-        }
+        // Send OTP email via Kafka
+        NotificationEvent notificationEvent = new NotificationEvent(
+                saved.getSender().getEmail(),
+                "Delivery OTP for your package: " + saved.getTrackingNumber(),
+                "Dear Customer,\n\nYour package with tracking number " + saved.getTrackingNumber() +
+                        " has been booked.\nOTP: " + saved.getDeliveryOtp(),
+                "OTP");
+        kafkaProducerService.sendNotification(notificationEvent);
+
+        // Also send package update event
+        kafkaProducerService.sendPackageEvent(new PackageEvent(
+                saved.getId(),
+                saved.getTrackingNumber(),
+                saved.getStatus(),
+                saved.getUserId(),
+                "Package created"));
 
         return PackageResponse.fromEntity(saved);
     }
@@ -137,6 +149,15 @@ public class PackageService {
 
         CourierPackage saved = packageRepository.save(pkg);
         createTrackingEvent(saved, location, remarks);
+
+        // Send update event to Kafka
+        kafkaProducerService.sendPackageEvent(new PackageEvent(
+                saved.getId(),
+                saved.getTrackingNumber(),
+                saved.getStatus(),
+                null,
+                remarks));
+
         return PackageResponse.fromEntity(saved);
     }
 
